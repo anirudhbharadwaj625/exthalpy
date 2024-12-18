@@ -1,5 +1,8 @@
 import React, { useState } from "react";
 import OpenAI from "openai";
+import { jsPDF } from "jspdf"; // Import jsPDF library
+import ReactMarkdown from "react-markdown";
+import html2canvas from "html2canvas";
 
 // Initialize OpenAI API with GPT-4 Vision
 const openai = new OpenAI({
@@ -7,11 +10,11 @@ const openai = new OpenAI({
   dangerouslyAllowBrowser: true,
 });
 
-
 function App() {
   const [file, setFile] = useState(null);
   const [response, setResponse] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   // Handle file upload
   const handleFileChange = (e) => {
@@ -32,127 +35,191 @@ function App() {
       return;
     }
   
-    setError("");
-    setResponse("Analyzing your embryo image...");
+    setError("");         // Clear previous errors
+    setResponse("");      // Clear previous responses
+    setLoading(true);     // Set loading to true immediately
   
     try {
-      // Convert file to base64 using FileReader
       const reader = new FileReader();
+  
+      // Event handler for FileReader success
       reader.onloadend = async () => {
-        const base64Image = reader.result.split(",")[1]; // Extract base64 data
+        const base64Image = reader.result.split(",")[1]; // Extract base64 content
   
-        console.log("Base64 Image Data:", base64Image); // Debugging log
+        try {
+          const result = await openai.chat.completions.create({
+            model: "gpt-4-turbo",
+            messages: [
+              {
+                role: "system",
+                content: `
+                  Analyze the uploaded embryo image and provide a detailed explanation.
+                  Format the response in Markdown as follows:
+                  - Use headings (e.g., **## Key Structures**) for each main point.
+                  - Use bullet points for sub-points.
+                  - Ensure the response is concise, clear, and easy to read.
+                `,
+              },
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "Here is the embryo image I uploaded." },
+                  {
+                    type: "image_url",
+                    image_url: { url: `data:image/png;base64,${base64Image}` },
+                  },
+                ],
+              },
+            ],
+            temperature: 0.7,
+          });
   
-        // Call OpenAI API with the updated model
-        console.log("Sending API Request...");
-        const result = await openai.chat.completions.create({
-          model: "gpt-4-turbo", // Updated model
-          messages: [
-            {
-//               role: "system",
-// content: `
-//   Analyze the uploaded embryo image and provide a detailed explanation.
-//   The response should include:
-//   - Identification of key structures: zona pellucida, inner cell mass (ICM), and trophectoderm (TE).
-//   - The developmental stage (cleavage, morula, blastocyst) with visual and structural evidence.
-//   - General embryo grading based on visible traits or qualitative description (e.g., high, medium, low quality).
-//   - Observations of abnormalities, such as fragmentation or irregular cell division.
-//   - A general overview of success probabilities based on implantation factors, explicitly noting that this is for informational purposes only.
-  
-//   **Format the output clearly and point-wise:**
-//   - Each key point must appear on a new line.
-//   - Use bullet points or numbering for clarity.
-  
-//   - Keep the response concise, informative, and easy to read.
-// `,
-role: "system",
-content: `
-Analyze the uploaded embryo image and provide a detailed explanation.
-The response should include:
-- **Identification of key structures**: zona pellucida, inner cell mass (ICM), and trophectoderm (TE).
-- **The developmental stage** (cleavage, morula, blastocyst) with visual and structural evidence.
-- **General embryo grading** based on visible traits or qualitative description (e.g., high, medium, low quality).
-- **Observations of abnormalities**, such as fragmentation or irregular cell division.
-- **Success probabilities** based on implantation factors.
-
-**Format the response in Markdown as follows:**
-- Use headings (e.g., **## Key Structures**) for each main point.
-- Use bullet points for sub-points.
-- Ensure the response is concise, clear, and easy to read.
-`,
-
-
-            },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Here is the embryo image I uploaded." },
-                { type: "image_url", image_url: { url: `data:image/png;base64,${base64Image}` } },
-              ],
-            },
-          ],
-          temperature: 0.7,
-        });
-        
-  
-        // Log the API response and display it
-        console.log("API Response:", result);
-        setResponse(result.choices[0]?.message?.content || "No response received.");
+          // Update the response
+          setResponse(result.choices[0]?.message?.content || "No response received.");
+        } catch (apiError) {
+          console.error("Error analyzing image:", apiError);
+          setError("Failed to analyze image. Please try again.");
+        } finally {
+          setLoading(false); // Stop loading
+        }
       };
   
-      // Start reading file as base64
-      reader.readAsDataURL(file);
+      reader.readAsDataURL(file); // Start reading the file
     } catch (err) {
-      console.error("Error analyzing image:", err);
+      console.error("Unexpected error:", err);
       setError("Something went wrong. Please try again later.");
+      setLoading(false); // Stop loading in case of failure
     }
   };
   
 
-  return (
+  // Handle PDF download
+  const downloadPDF = () => {
+    const content = document.getElementById("pdf-content");
+  
+    html2canvas(content, { scale: 2 }).then((canvas) => {
+      const imgData = canvas.toDataURL("image/png"); // Convert content to image
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+  
+      // Add content as an image, ensuring it fits within the PDF
+      const imgHeight = (canvas.height * pdfWidth) / canvas.width;
+  
+      if (imgHeight > pdfHeight) {
+        pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+      } else {
+        pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, imgHeight);
+      }
+  
+      // Add uploaded image on the next page if available
+      if (file) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const userImage = reader.result; // User-uploaded image data
+          pdf.addPage();
+          pdf.text("Uploaded Image", 20, 20);
+          pdf.addImage(userImage, "PNG", 20, 30, 100, 100); // Adjust size to fit page
+          pdf.save("embryo_analysis_report.pdf");
+        };
+        reader.readAsDataURL(file);
+      } else {
+        pdf.save("embryo_analysis_report.pdf");
+      }
+    });
+  };
+  
     
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-  <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-3xl">
-    <h1 className="text-2xl font-bold mb-4 text-center">Embryo Analysis Chatbot</h1>
 
-    {/* File Upload */}
-    <input
-      type="file"
-      accept="image/*"
-      onChange={handleFileChange}
-      className="mb-4 w-full border p-2 rounded"
-    />
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4 py-8">
+      <div className="bg-white p-6 md:p-8 rounded-lg shadow-lg w-full max-w-3xl">
+        <h1 className="text-3xl font-bold mb-6 text-center text-blue-600">
+          Embryo Analysis Chatbot
+        </h1>
 
-    {/* Error */}
-    {error && <p className="text-red-500 mb-4">{error}</p>}
+        {/* File Upload */}
+        <label className="block mb-4">
+          <span className="block font-medium text-gray-700 mb-2">Upload Image</span>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={handleFileChange}
+            className="block w-full text-sm text-gray-600
+            file:mr-4 file:py-2 file:px-4
+            file:rounded-lg file:border-0
+            file:text-sm file:font-semibold
+            file:bg-blue-50 file:text-blue-600
+            hover:file:bg-blue-100"
+          />
+        </label>
 
-    {/* Analyze Button */}
+        {/* Image Preview */}
+        {file && (
+          <div className="mb-4 flex justify-center">
+            <img
+              src={URL.createObjectURL(file)}
+              alt="Preview"
+              className="max-w-xs rounded-lg shadow-md"
+            />
+          </div>
+        )}
+
+        {/* Error Message */}
+        {error && <p className="text-red-500 mb-4">{error}</p>}
+
+        {/* Analyze Button */}
+        <button
+          onClick={analyzeImage}
+          className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold shadow-md hover:bg-blue-600 transition duration-300"
+          disabled={loading}
+        >
+          {loading ? "Analyzing..." : "Analyze Image"}
+        </button>
+
+        {/* Loading Message */}
+        {loading && (
+  <div className="mt-4 text-center">
+    <p className="text-blue-600 font-medium text-lg animate-pulse">
+      Analyzing Image, Please Wait...
+    </p>
+    <div className="flex justify-center mt-2">
+      <div className="animate-spin rounded-full h-10 w-10 border-t-4 border-blue-500"></div>
+    </div>
+  </div>
+)}
+
+{response && !loading && (
+  <div id="pdf-content" className="mt-6 p-4 border rounded-lg bg-gray-100">
+    <h2 className="font-semibold mb-2 text-xl text-gray-800">
+      Analysis Result:
+    </h2>
+    {file && (
+      <div className="flex justify-center mb-4">
+        <img
+          src={URL.createObjectURL(file)}
+          alt="Uploaded Preview"
+          className="max-w-xs rounded-lg shadow-md"
+        />
+      </div>
+    )}
+    <div className="prose prose-sm md:prose-lg max-w-none text-gray-700">
+      <ReactMarkdown>{response}</ReactMarkdown>
+    </div>
+
+    {/* Download PDF Button */}
     <button
-      onClick={analyzeImage}
-      className="w-full bg-blue-500 text-white py-2 rounded hover:bg-blue-600"
+      onClick={downloadPDF}
+      className="mt-4 bg-green-500 text-white py-2 px-4 rounded-lg hover:bg-green-600 transition duration-300"
     >
-      Analyze Image
+      Download as PDF
     </button>
-
-    {/* Response */}
-    {/* Response */}
-{/* Response */}
-{response && (
-  <div className="mt-6 p-4 border rounded bg-gray-50">
-    <h2 className="font-semibold mb-4 text-lg">Analysis Result:</h2>
-    <ul className="list-disc list-inside space-y-2">
-      {response.split("\n").map((line, index) => {
-        if (line.trim() === "") return null; // Skip empty lines
-        return <li key={index} className="text-gray-700">{line}</li>;
-      })}
-    </ul>
   </div>
 )}
 
 
-  </div>
-</div>
-
+      </div>
+    </div>
   );
 }
 
